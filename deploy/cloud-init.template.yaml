@@ -1,0 +1,80 @@
+#cloud-config
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - docker.io
+  - docker-compose-v2
+  - unattended-upgrades
+timezone: Etc/UTC
+disable_root: true
+ssh_pwauth: false
+users:
+  - name: deploy
+    groups: [sudo, docker]
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    ssh_authorized_keys:
+      - REPLACE_WITH_DEPLOY_SSH_PUBLIC_KEY
+write_files:
+  - path: /etc/ssh/sshd_config.d/01-llm-oauth.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+  - path: /etc/cloudflared/tunnel.token
+    permissions: "0600"
+    content: REPLACE_WITH_CLOUDFLARED_TUNNEL_TOKEN
+  - path: /etc/systemd/system/cloudflared.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Cloudflare Tunnel for llm-oauth
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/tunnel.token
+      Restart=always
+      RestartSec=5s
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {"log-driver":"local","log-opts":{"max-size":"10m","max-file":"3"}}
+  - path: /usr/local/sbin/llm-oauth-bootstrap
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      curl --fail --show-error --silent --location --retry 5 \
+        https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64.deb \
+        --output /tmp/cloudflared.deb
+      printf '%s\n' '3be76adc4185d36a0bfb4c2dd8663292f0ed363797f2180333b513b43c81d419  /tmp/cloudflared.deb' | sha256sum --check --status
+      dpkg --install /tmp/cloudflared.deb
+      rm /tmp/cloudflared.deb
+      systemctl daemon-reload
+      systemctl enable --now docker cloudflared
+      sshd -t
+      systemctl restart ssh
+      install -d -o deploy -g deploy -m 0750 /opt/llm-oauth
+      chown deploy:deploy /opt/llm-oauth/compose*.yaml /opt/llm-oauth/.env
+      if [ ! -f /swapfile ]; then
+        fallocate -l 2G /swapfile
+        chmod 0600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
+      fi
+      touch /var/lib/llm-oauth-bootstrap-complete
+runcmd:
+  - [bash, /usr/local/sbin/llm-oauth-bootstrap]

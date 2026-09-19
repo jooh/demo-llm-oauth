@@ -1,0 +1,5 @@
+.env
+.env.*
+!.env.example
+cloud-init.rendered.yaml
+__pycache__/
