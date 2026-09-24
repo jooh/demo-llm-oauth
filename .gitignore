@@ -2,4 +2,9 @@
 .env.*
 !.env.example
 cloud-init.rendered.yaml
+.deploy-state/
+agentgateway-data/
+deploy/.env.production
+deploy/.env.infrastructure
+deploy/*.key
 __pycache__/

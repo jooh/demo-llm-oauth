@@ -67,7 +67,9 @@ write_files:
       sshd -t
       systemctl restart ssh
       install -d -o deploy -g deploy -m 0750 /opt/llm-oauth
-      chown deploy:deploy /opt/llm-oauth/compose*.yaml /opt/llm-oauth/.env
+      install -d -o 65532 -g 65532 -m 0750 /opt/llm-oauth/agentgateway-data
+      # Application files are copied by the deployment workflow after the VM is ready.
+      chown deploy:deploy /opt/llm-oauth
       if [ ! -f /swapfile ]; then
         fallocate -l 2G /swapfile
         chmod 0600 /swapfile

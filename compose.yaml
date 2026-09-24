@@ -8,8 +8,11 @@ services:
     configs:
       - source: agentgateway
         target: /etc/agentgateway.yaml
+    volumes:
+      - ./agentgateway-data:/var/lib/agentgateway
     ports:
       - "127.0.0.1:4000:4000"
+      - "127.0.0.1:4001:4001"
 
   openwebui:
     image: ghcr.io/open-webui/open-webui:v0.11.3
@@ -21,7 +24,7 @@ services:
     volumes:
       - openwebui-data:/app/backend/data
     environment:
-      WEBUI_URL: "http://localhost:3000"
+      WEBUI_URL: "${WEBUI_URL:-http://localhost:3000}"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:-REPLACE_WITH_RANDOM_SECRET}"
       ENABLE_PERSISTENT_CONFIG: "false"
       WEBUI_AUTH: "true"
@@ -35,7 +38,7 @@ services:
       OAUTH_CLIENT_ID: "${WEBUI_CLIENT_ID:-REPLACE_WITH_WEBUI_CLIENT_ID}"
       OAUTH_CLIENT_SECRET: "${WEBUI_CLIENT_SECRET:-REPLACE_WITH_WEBUI_CLIENT_SECRET}"
       OPENID_PROVIDER_URL: "https://login.microsoftonline.com/${ENTRA_TENANT_ID:-REPLACE_WITH_TENANT_ID}/v2.0/.well-known/openid-configuration"
-      OPENID_REDIRECT_URI: "http://localhost:3000/oauth/oidc/callback"
+      OPENID_REDIRECT_URI: "${OPENID_REDIRECT_URI:-http://localhost:3000/oauth/oidc/callback}"
       OAUTH_SCOPES: "openid profile email offline_access api://${GATEWAY_APP_ID:-REPLACE_WITH_GATEWAY_APP_ID}/llm.invoke"
       OAUTH_CODE_CHALLENGE_METHOD: "S256"
       OAUTH_TOKEN_ENDPOINT_AUTH_METHOD: "client_secret_post"
@@ -44,6 +47,8 @@ services:
       OAUTH_PICTURE_CLAIM: ""
       ENABLE_OLLAMA_API: "false"
       ENABLE_OPENAI_API: "true"
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      FORWARD_SESSION_INFO_HEADER_CHAT_ID: "x-opencode-session"
       OPENAI_API_BASE_URLS: "http://agentgateway:4000/v1"
       OPENAI_API_KEYS: ""
       OPENAI_API_CONFIGS: >-
@@ -52,6 +57,17 @@ services:
 configs:
   agentgateway:
     content: |
+      config:
+        database:
+          url: "sqlite:///var/lib/agentgateway/data.db"
+        standardAttributes:
+          user: "default(jwt.email, default(jwt.oid, jwt.sub))"
+      frontendPolicies:
+        accessLog:
+          add:
+            entra_tenant_id: "string(jwt.tid)"
+            entra_object_id: "string(jwt.oid)"
+            entra_email: "default(jwt.email, '')"
       llm:
         port: 4000
         policies:
@@ -69,11 +85,18 @@ configs:
           - name: llm
             provider: openAI
             requestHeaders:
+              set:
+                user-agent: "open-webui-llm-oauth/1.0"
               remove: [cookie]
             params:
-              model: "${UPSTREAM_MODEL:-REPLACE_WITH_UPSTREAM_MODEL}"
-              baseUrl: "${UPSTREAM_BASE_URL:-http://REPLACE_WITH_LLM_HOST:8000/v1}"
+              model: "${UPSTREAM_MODEL:-glm-5.3-flash}"
+              baseUrl: "${UPSTREAM_BASE_URL:-https://opencode.ai/zen/go/v1}"
               apiKey: "${UPSTREAM_API_KEY:-}"
+      gateways:
+        agentgateway-ui:
+          port: 4001
+      ui:
+        gateways: [agentgateway-ui]
 
 volumes:
   openwebui-data:

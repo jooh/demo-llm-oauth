@@ -1,0 +1,137 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Commit or ref to deploy from main
+        required: false
+        default: main
+
+concurrency:
+  group: llm-oauth-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out requested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+
+      - name: Require a revision reachable from main
+        run: |
+          git fetch --no-tags --prune --unshallow origin main 2>/dev/null || git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo 'The requested revision is not reachable from main.' >&2
+            exit 1
+          }
+
+      - name: Install cloudflared
+        run: |
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/cloudflared.deb" \
+            https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64.deb
+          sudo dpkg --install "$RUNNER_TEMP/cloudflared.deb"
+
+      - name: Prepare SSH credentials
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
+        run: |
+          install -m 700 -d "$RUNNER_TEMP/llm-oauth"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/llm-oauth/deploy.key"
+          chmod 600 "$RUNNER_TEMP/llm-oauth/deploy.key"
+          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$RUNNER_TEMP/llm-oauth/known_hosts"
+          chmod 600 "$RUNNER_TEMP/llm-oauth/known_hosts"
+
+      - name: Open Cloudflare Access SSH tunnel
+        env:
+          ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
+          ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          cloudflared access tcp --hostname "$DEPLOY_HOST" \
+            --id "$ACCESS_CLIENT_ID" --secret "$ACCESS_CLIENT_SECRET" \
+            --url 127.0.0.1:2222 >"$RUNNER_TEMP/llm-oauth/cloudflared.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/llm-oauth/cloudflared.pid"
+          for i in $(seq 1 20); do
+            if (echo >/dev/tcp/127.0.0.1/2222) 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/llm-oauth/cloudflared.log"
+          exit 1
+
+      - name: Deploy Compose configuration
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+          GATEWAY_APP_ID: ${{ secrets.GATEWAY_APP_ID }}
+          WEBUI_CLIENT_ID: ${{ secrets.WEBUI_CLIENT_ID }}
+          WEBUI_CLIENT_SECRET: ${{ secrets.WEBUI_CLIENT_SECRET }}
+          WEBUI_SECRET_KEY: ${{ secrets.WEBUI_SECRET_KEY }}
+          UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
+          UPSTREAM_MODEL: ${{ vars.UPSTREAM_MODEL }}
+          UPSTREAM_BASE_URL: ${{ vars.UPSTREAM_BASE_URL }}
+          WEBUI_URL: ${{ vars.WEBUI_URL }}
+          OPENID_REDIRECT_URI: ${{ vars.OPENID_REDIRECT_URI }}
+          DEPLOY_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh -p 2222 -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
+            -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
+            deploy@127.0.0.1 'install -d -m 0700 /tmp/llm-oauth-deploy'
+          install -m 700 -d "$RUNNER_TEMP/llm-oauth/bundle"
+          umask 077
+          cat > "$RUNNER_TEMP/llm-oauth/bundle/.env" <<EOF
+          ENTRA_TENANT_ID=$ENTRA_TENANT_ID
+          GATEWAY_APP_ID=$GATEWAY_APP_ID
+          WEBUI_CLIENT_ID=$WEBUI_CLIENT_ID
+          WEBUI_CLIENT_SECRET=$WEBUI_CLIENT_SECRET
+          WEBUI_SECRET_KEY=$WEBUI_SECRET_KEY
+          UPSTREAM_API_KEY=$UPSTREAM_API_KEY
+          UPSTREAM_MODEL=$UPSTREAM_MODEL
+          UPSTREAM_BASE_URL=$UPSTREAM_BASE_URL
+          WEBUI_URL=$WEBUI_URL
+          OPENID_REDIRECT_URI=$OPENID_REDIRECT_URI
+          EOF
+          chmod 600 "$RUNNER_TEMP/llm-oauth/bundle/.env"
+          scp -P 2222 -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
+            -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
+            compose.yaml compose.production.yaml "$RUNNER_TEMP/llm-oauth/bundle/.env" \
+            deploy@127.0.0.1:/tmp/llm-oauth-deploy/
+          ssh -p 2222 -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
+            -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
+            deploy@127.0.0.1 "DEPLOY_COMMIT='$DEPLOY_COMMIT' bash -s" <<'REMOTE'
+            set -euo pipefail
+            install -d -m 0750 -o deploy -g deploy /opt/llm-oauth
+            sudo install -d -m 0750 -o 65532 -g 65532 /opt/llm-oauth/agentgateway-data
+            if [[ -f /opt/llm-oauth/compose.yaml ]]; then
+              install -d -m 0750 -o deploy -g deploy "/opt/llm-oauth/releases/$DEPLOY_COMMIT-previous"
+              cp -a /opt/llm-oauth/compose.yaml /opt/llm-oauth/compose.production.yaml /opt/llm-oauth/.env "/opt/llm-oauth/releases/$DEPLOY_COMMIT-previous/"
+            fi
+            cp /tmp/llm-oauth-deploy/compose.yaml /opt/llm-oauth/compose.yaml
+            cp /tmp/llm-oauth-deploy/compose.production.yaml /opt/llm-oauth/compose.production.yaml
+            install -m 0600 -o deploy -g deploy /tmp/llm-oauth-deploy/.env /opt/llm-oauth/.env
+            cd /opt/llm-oauth
+            docker compose --env-file .env -f compose.yaml -f compose.production.yaml config --quiet
+            docker compose --env-file .env -f compose.yaml -f compose.production.yaml pull
+            docker compose --env-file .env -f compose.yaml -f compose.production.yaml up -d --remove-orphans
+            docker compose --env-file .env -f compose.yaml -f compose.production.yaml ps
+            curl --fail --silent http://127.0.0.1:3000/ >/dev/null
+            rm -rf /tmp/llm-oauth-deploy
+          REMOTE
+
+      - name: Stop access tunnel
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/llm-oauth/cloudflared.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/llm-oauth/cloudflared.pid")" || true
+          fi

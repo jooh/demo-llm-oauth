@@ -6,17 +6,18 @@ on LLM requests. Agentgateway validates the signature, issuer, audience and
 expiry, requires the delegated `llm.invoke` scope, and calls your existing
 OpenAI-compatible LLM endpoint. Open WebUI manages token renewal.
 
-The deployment exposes Open WebUI at `http://localhost:3000` and the gateway at
-`http://localhost:4000/v1`. Both host ports bind only to loopback. The containers
-communicate over their private Compose network. This is a local evaluation
-setup; see the remote deployment notes below before serving other machines.
+The deployment exposes Open WebUI at `http://localhost:3000`, the gateway API at
+`http://localhost:4000/v1`, and Agentgateway's local administration UI at
+`http://localhost:4001/ui`. All host ports bind only to loopback. The containers
+communicate over their private Compose network. This is a local evaluation setup;
+see the remote deployment notes below before serving other machines.
 
 ## Requirements
 
 - Docker Engine or Docker Desktop with Docker Compose 2.23.1 or later. The
   `configs.content` feature embeds the gateway configuration in the Compose file.
-- An existing OpenAI-compatible LLM server, such as NVIDIA NIM, reachable from
-  the gateway container. This setup does not start or download a model.
+- An OpenCode Go subscription and key. The default upstream is the OpenAI-
+  compatible `https://opencode.ai/zen/go/v1` endpoint.
 - Permission to create two single-tenant Entra app registrations and grant
   delegated API consent.
 - Network access to Entra for login, token refresh and signing keys, and to the
@@ -27,6 +28,19 @@ Pinned images: `cr.agentgateway.dev/agentgateway:v1.5.0` and
 is required. Open WebUI uses its built-in SQLite database on a named volume.
 
 ## 1. Register the gateway API in Entra
+
+The supported path is the idempotent setup script. It uses the currently
+selected `az` tenant and signed-in user, and stores generated state under the
+ignored `.deploy-state/` directory:
+
+```bash
+scripts/configure-entra.sh
+scripts/local-setup.sh
+```
+
+Those commands create the registrations, delegated scope, admin consent,
+callback URIs, email claim, and initial user assignment described below. Review
+the result in Entra before signing in at `http://localhost:3000`.
 
 1. Create a single-tenant app registration named `LLM Gateway`.
 2. Record its **Application (client) ID** as `GATEWAY_APP_ID` and your
@@ -101,6 +115,10 @@ Alternatively, export `ENTRA_TENANT_ID`, `GATEWAY_APP_ID`, `WEBUI_CLIENT_ID`,
 and, if needed, `UPSTREAM_API_KEY` before running Compose. A separate `.env`
 file is optional; all deployment configuration is already in `compose.yaml`.
 
+`scripts/local-setup.sh` reads the `opencode-go` credential from
+`~/.pi/agent/auth.json`, selects `glm-5.3-flash`, and writes a mode-0600
+`.env.local` without printing the key.
+
 The upstream address is resolved inside the gateway container. `localhost`
 would mean that container itself, not your host. Use a reachable server address;
 on Docker Desktop, `host.docker.internal` can reach a model on the host.
@@ -122,7 +140,13 @@ The model connection is preconfigured with `auth_type: system_oauth` and a
 static model ID, so no connection edits or model discovery are needed. The
 gateway still checks authorization on every inference request. Open WebUI's
 `ENABLE_PERSISTENT_CONFIG=false` makes the Compose settings authoritative at
-startup, while conversations and accounts persist in the named volume.
+startup, while conversations and accounts persist in their volumes. Open
+`http://localhost:4001/ui/llm/logs` to inspect the gateway request log; its
+SQLite database is stored in the ignored `agentgateway-data/` directory. Each
+authenticated request records the Entra tenant ID and object ID, and uses the
+verified email claim as the UI user label when the access token contains it;
+otherwise it falls back to the object ID. The guest UPN is never used as a
+silent fallback.
 
 ## 5. Check the OAuth boundary
 
@@ -155,6 +179,29 @@ model ID, backend URL or backend credential needs correcting.
 Stop with `docker compose down`. The data volume is retained. Running
 `docker compose down -v` also deletes the stored accounts and conversations.
 
+## Hetzner and Cloudflare deployment
+
+Create a Cloudflare API token in Zero Trust with account-scoped Tunnel Edit,
+Access Apps and Policies Edit, Access Service Tokens Edit, Access Identity
+Providers Edit, Access Organizations Read, plus zone-scoped DNS Edit and Read.
+Store the token and IDs only in your shell environment or a mode-0600 ignored
+file. Then preview and apply the infrastructure reconciliation:
+
+```bash
+scripts/provision.sh plan
+scripts/provision.sh apply
+scripts/record-host-key.sh
+scripts/configure-github.sh
+```
+
+Provisioning creates one labelled CX23 in `hel1`, an empty-inbound firewall,
+the tunnel and DNS routes, and an SSH Access application with your email and
+the GitHub Actions service token. It does not start application containers.
+The GitHub workflow is manual: use `Actions → Deploy → Run workflow` from
+`main`. It connects through `ssh.johancarlin.com`, verifies the recorded host
+key, uploads the pinned Compose files and private environment file, validates
+the merge, and starts the production stack.
+
 ## Serving other machines
 
 Put an HTTPS reverse proxy in front of Open WebUI, with WebSocket support.
@@ -170,11 +217,11 @@ for that hop too if it crosses a host or other untrusted network.
 ## Validation and sources
 
 The configuration was rendered by Docker Compose and checked against the
-Compose and pinned Agentgateway JSON schemas. It was also checked against the
-pinned Open WebUI source for environment-based connection configuration,
-OAuth bearer forwarding, ID-token profile handling and refresh support.
-Container startup and a live Entra sign-in still need to be verified in your
-environment; this workspace has no Docker daemon or your Entra registrations.
+Compose and pinned Agentgateway image. The local stack was started with the
+pinned images, the Entra callback completed successfully, and two chat turns
+returned through the OpenCode Go endpoint. The unauthenticated gateway check
+returned 401. Production infrastructure still requires the manual Cloudflare
+API token prerequisite described above.
 
 - [Agentgateway stock image and Compose](https://agentgateway.dev/docs/standalone/latest/documentation/setup/install/docker/)
 - [Agentgateway JWT authentication](https://agentgateway.dev/docs/standalone/latest/documentation/configuration/security/jwt-authn/)

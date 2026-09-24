@@ -1,7 +1,7 @@
 services:
   openwebui:
     environment:
-      WEBUI_URL: "https://chat.johancarlin.com"
-      OPENID_REDIRECT_URI: "https://chat.johancarlin.com/oauth/oidc/callback"
+      WEBUI_URL: "${WEBUI_URL:-https://chat.johancarlin.com}"
+      OPENID_REDIRECT_URI: "${OPENID_REDIRECT_URI:-https://chat.johancarlin.com/oauth/oidc/callback}"
       WEBUI_SESSION_COOKIE_SECURE: "true"
       WEBUI_AUTH_COOKIE_SECURE: "true"
