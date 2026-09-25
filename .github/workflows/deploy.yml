@@ -19,26 +19,29 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out requested revision
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.revision }}
+          fetch-depth: 0
 
       - name: Require a revision reachable from main
         run: |
-          git fetch --no-tags --prune --unshallow origin main 2>/dev/null || git fetch --no-tags origin main
+          git fetch --no-tags origin main
           git merge-base --is-ancestor HEAD origin/main || {
             echo 'The requested revision is not reachable from main.' >&2
             exit 1
           }
+          echo "DEPLOY_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Install cloudflared
         run: |
-          curl --fail --silent --show-error --location \
+          curl --fail --silent --show-error --location --retry 5 \
             --output "$RUNNER_TEMP/cloudflared.deb" \
             https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64.deb
+          printf '%s  %s\n' '3be76adc4185d36a0bfb4c2dd8663292f0ed363797f2180333b513b43c81d419' "$RUNNER_TEMP/cloudflared.deb" | sha256sum --check --status
           sudo dpkg --install "$RUNNER_TEMP/cloudflared.deb"
 
       - name: Prepare SSH credentials
@@ -46,32 +49,38 @@ jobs:
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
         run: |
+          umask 077
           install -m 700 -d "$RUNNER_TEMP/llm-oauth"
+          : "${DEPLOY_SSH_PRIVATE_KEY:?Missing deployment private key}" "${DEPLOY_SSH_HOST_KEY:?Missing SSH host key}"
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/llm-oauth/deploy.key"
-          chmod 600 "$RUNNER_TEMP/llm-oauth/deploy.key"
           printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$RUNNER_TEMP/llm-oauth/known_hosts"
-          chmod 600 "$RUNNER_TEMP/llm-oauth/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/llm-oauth/deploy.key" >/dev/null
+          ssh-keygen -lf "$RUNNER_TEMP/llm-oauth/known_hosts" >/dev/null
 
-      - name: Open Cloudflare Access SSH tunnel
+      - name: Open and verify Cloudflare Access SSH tunnel
         env:
           ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
           ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
         run: |
+          : "${ACCESS_CLIENT_ID:?Missing Access client ID}" "${ACCESS_CLIENT_SECRET:?Missing Access client secret}" "${DEPLOY_HOST:?Missing deploy hostname}"
           cloudflared access tcp --hostname "$DEPLOY_HOST" \
             --id "$ACCESS_CLIENT_ID" --secret "$ACCESS_CLIENT_SECRET" \
             --url 127.0.0.1:2222 >"$RUNNER_TEMP/llm-oauth/cloudflared.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/llm-oauth/cloudflared.pid"
-          for i in $(seq 1 20); do
-            if (echo >/dev/tcp/127.0.0.1/2222) 2>/dev/null; then exit 0; fi
-            sleep 1
+          for _ in $(seq 1 30); do
+            kill -0 "$(cat "$RUNNER_TEMP/llm-oauth/cloudflared.pid")" || exit 1
+            if ssh -p 2222 -o BatchMode=yes -o ConnectTimeout=5 \
+              -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
+              -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
+              deploy@127.0.0.1 'sudo test -f /var/lib/llm-oauth-bootstrap-complete && sudo systemctl is-active --quiet docker cloudflared'; then exit 0; fi
+            sleep 2
           done
-          cat "$RUNNER_TEMP/llm-oauth/cloudflared.log"
+          echo 'Authenticated SSH/bootstrap check failed.' >&2
           exit 1
 
       - name: Deploy Compose configuration
         env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
           GATEWAY_APP_ID: ${{ secrets.GATEWAY_APP_ID }}
           WEBUI_CLIENT_ID: ${{ secrets.WEBUI_CLIENT_ID }}
@@ -82,56 +91,29 @@ jobs:
           UPSTREAM_BASE_URL: ${{ vars.UPSTREAM_BASE_URL }}
           WEBUI_URL: ${{ vars.WEBUI_URL }}
           OPENID_REDIRECT_URI: ${{ vars.OPENID_REDIRECT_URI }}
-          DEPLOY_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          ssh -p 2222 -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
-            -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
-            deploy@127.0.0.1 'install -d -m 0700 /tmp/llm-oauth-deploy'
-          install -m 700 -d "$RUNNER_TEMP/llm-oauth/bundle"
           umask 077
-          cat > "$RUNNER_TEMP/llm-oauth/bundle/.env" <<EOF
-          ENTRA_TENANT_ID=$ENTRA_TENANT_ID
-          GATEWAY_APP_ID=$GATEWAY_APP_ID
-          WEBUI_CLIENT_ID=$WEBUI_CLIENT_ID
-          WEBUI_CLIENT_SECRET=$WEBUI_CLIENT_SECRET
-          WEBUI_SECRET_KEY=$WEBUI_SECRET_KEY
-          UPSTREAM_API_KEY=$UPSTREAM_API_KEY
-          UPSTREAM_MODEL=$UPSTREAM_MODEL
-          UPSTREAM_BASE_URL=$UPSTREAM_BASE_URL
-          WEBUI_URL=$WEBUI_URL
-          OPENID_REDIRECT_URI=$OPENID_REDIRECT_URI
-          EOF
-          chmod 600 "$RUNNER_TEMP/llm-oauth/bundle/.env"
-          scp -P 2222 -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
+          bundle="$RUNNER_TEMP/llm-oauth/bundle"
+          install -m 700 -d "$bundle"
+          python3 scripts/write-deploy-env.py "$bundle/.env"
+          ssh_options=(-p 2222 -o BatchMode=yes -o ConnectTimeout=10 -o "UserKnownHostsFile=$RUNNER_TEMP/llm-oauth/known_hosts" -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key")
+          stage=$(ssh "${ssh_options[@]}" deploy@127.0.0.1 'umask 077; mktemp -d /tmp/llm-oauth-deploy.XXXXXXXX')
+          [[ $stage =~ ^/tmp/llm-oauth-deploy\.[a-zA-Z0-9]+$ ]] || exit 1
+          # stage is generated by mktemp and restricted to a safe path above.
+          trap 'ssh "${ssh_options[@]}" deploy@127.0.0.1 "rm -rf -- $stage" || true' EXIT
+          scp -P 2222 -o BatchMode=yes -o "UserKnownHostsFile=$RUNNER_TEMP/llm-oauth/known_hosts" \
             -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
-            compose.yaml compose.production.yaml "$RUNNER_TEMP/llm-oauth/bundle/.env" \
-            deploy@127.0.0.1:/tmp/llm-oauth-deploy/
-          ssh -p 2222 -o UserKnownHostsFile="$RUNNER_TEMP/llm-oauth/known_hosts" \
-            -o StrictHostKeyChecking=yes -i "$RUNNER_TEMP/llm-oauth/deploy.key" \
-            deploy@127.0.0.1 "DEPLOY_COMMIT='$DEPLOY_COMMIT' bash -s" <<'REMOTE'
-            set -euo pipefail
-            install -d -m 0750 -o deploy -g deploy /opt/llm-oauth
-            sudo install -d -m 0750 -o 65532 -g 65532 /opt/llm-oauth/agentgateway-data
-            if [[ -f /opt/llm-oauth/compose.yaml ]]; then
-              install -d -m 0750 -o deploy -g deploy "/opt/llm-oauth/releases/$DEPLOY_COMMIT-previous"
-              cp -a /opt/llm-oauth/compose.yaml /opt/llm-oauth/compose.production.yaml /opt/llm-oauth/.env "/opt/llm-oauth/releases/$DEPLOY_COMMIT-previous/"
-            fi
-            cp /tmp/llm-oauth-deploy/compose.yaml /opt/llm-oauth/compose.yaml
-            cp /tmp/llm-oauth-deploy/compose.production.yaml /opt/llm-oauth/compose.production.yaml
-            install -m 0600 -o deploy -g deploy /tmp/llm-oauth-deploy/.env /opt/llm-oauth/.env
-            cd /opt/llm-oauth
-            docker compose --env-file .env -f compose.yaml -f compose.production.yaml config --quiet
-            docker compose --env-file .env -f compose.yaml -f compose.production.yaml pull
-            docker compose --env-file .env -f compose.yaml -f compose.production.yaml up -d --remove-orphans
-            docker compose --env-file .env -f compose.yaml -f compose.production.yaml ps
-            curl --fail --silent http://127.0.0.1:3000/ >/dev/null
-            rm -rf /tmp/llm-oauth-deploy
-          REMOTE
+            compose.yaml compose.production.yaml "$bundle/.env" "deploy@127.0.0.1:$stage/"
+          # Pass the locally resolved revision and validated staging path.
+          # shellcheck disable=SC2029
+          ssh "${ssh_options[@]}" deploy@127.0.0.1 \
+            "bash -s -- '$stage' '$DEPLOY_COMMIT' '$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT'" < scripts/deploy-remote.sh
 
-      - name: Stop access tunnel
+      - name: Clean up deployment credentials and tunnel
         if: always()
         run: |
           if [[ -f "$RUNNER_TEMP/llm-oauth/cloudflared.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/llm-oauth/cloudflared.pid")" || true
           fi
+          rm -rf "$RUNNER_TEMP/llm-oauth" "$RUNNER_TEMP/cloudflared.deb"

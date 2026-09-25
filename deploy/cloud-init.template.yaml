@@ -9,6 +9,9 @@ packages:
 timezone: Etc/UTC
 disable_root: true
 ssh_pwauth: false
+ssh_keys:
+  ed25519_private: REPLACE_WITH_HOST_ED25519_PRIVATE_KEY
+  ed25519_public: REPLACE_WITH_HOST_ED25519_PUBLIC_KEY
 users:
   - name: deploy
     groups: [sudo, docker]
@@ -64,6 +67,9 @@ write_files:
       rm /tmp/cloudflared.deb
       systemctl daemon-reload
       systemctl enable --now docker cloudflared
+      # Ubuntu may socket-activate SSH only on the first connection. sshd -t
+      # still requires its runtime directory before that first connection.
+      install -d -m 0755 /run/sshd
       sshd -t
       systemctl restart ssh
       install -d -o deploy -g deploy -m 0750 /opt/llm-oauth

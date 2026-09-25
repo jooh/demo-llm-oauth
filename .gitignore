@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!deploy/.env.infrastructure.example
 cloud-init.rendered.yaml
 .deploy-state/
 agentgateway-data/

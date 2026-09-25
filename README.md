@@ -181,11 +181,16 @@ Stop with `docker compose down`. The data volume is retained. Running
 
 ## Hetzner and Cloudflare deployment
 
-Create a Cloudflare API token in Zero Trust with account-scoped Tunnel Edit,
-Access Apps and Policies Edit, Access Service Tokens Edit, Access Identity
-Providers Edit, Access Organizations Read, plus zone-scoped DNS Edit and Read.
-Store the token and IDs only in your shell environment or a mode-0600 ignored
-file. Then preview and apply the infrastructure reconciliation:
+Production reuses the existing `demo-llm-oauth` Cloudflare Tunnel, chat and SSH
+DNS/routes, and Access applications. Both applications have an email/OTP gate;
+Open WebUI then performs its own Entra sign-in. The provisioner validates those
+resources and creates only the missing Actions service token/policy and Hetzner
+resources. It never rewrites the existing DNS, routes or email policies.
+
+See [deploy/README.md](deploy/README.md) for token permissions, private state,
+VM bootstrap, host verification, deployment and rollback. Follow [PLAN.md](PLAN.md)
+for the remaining acceptance gates. Python 3, hcloud, cloudflared, jq, gh and
+OpenSSH are required locally.
 
 ```bash
 scripts/provision.sh plan
@@ -194,13 +199,9 @@ scripts/record-host-key.sh
 scripts/configure-github.sh
 ```
 
-Provisioning creates one labelled CX23 in `hel1`, an empty-inbound firewall,
-the tunnel and DNS routes, and an SSH Access application with your email and
-the GitHub Actions service token. It does not start application containers.
-The GitHub workflow is manual: use `Actions → Deploy → Run workflow` from
-`main`. It connects through `ssh.johancarlin.com`, verifies the recorded host
-key, uploads the pinned Compose files and private environment file, validates
-the merge, and starts the production stack.
+The requested default is CPX22 in hel1. Provisioning stops if that type is
+unavailable; it does not silently substitute a different type or location.
+The manual GitHub workflow must be reviewed and merged to main before dispatch.
 
 ## Serving other machines
 
