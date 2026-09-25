@@ -2,6 +2,12 @@
 
 ## Current state
 
+The production VM is paused: the VM and its Primary IPs have been deleted.
+Protected snapshot `436089641` is the current restore point; the tested earlier
+snapshot `436089621` is also retained. Together they occupy 11.080 GB and cost
+about EUR 0.20/month including the account's 25% VAT (price checked 2026-09-25).
+The application deployment and identity configuration remain available for restore.
+
 - [x] Entra registrations reconciled for the current tenant: the gateway API
       and Open WebUI client, delegated `llm.invoke`, v2 access tokens, admin
       consent, production and localhost callbacks, email claims, and the
@@ -205,6 +211,22 @@ OpenWebUI and Agentgateway data volumes in place across redeployments.
   is unhealthy.
 
 ## Operational follow-up
+
+### Snapshot lifecycle
+
+Use `scripts/vm-lifecycle.sh pause` to stop the application cleanly, verify the
+databases, snapshot the powered-off VM, and remove the VM and its Primary IPs.
+Use `scripts/vm-lifecycle.sh restore` to recreate it from that snapshot with
+the same data and SSH host identity. `scripts/vm-lifecycle.sh status` reports
+the provider state and current snapshot storage cost. See
+[the lifecycle runbook](deploy/README.md#pause-billing-and-restore-the-vm).
+
+The 2026-09-25 live restore test verified both databases and the active
+configuration against their pre-snapshot hashes, checked SQLite integrity,
+preserved the pinned host key, and passed WebUI health/gateway rejection checks.
+The normal provisioner also reported reuse for the restored VM. The lifecycle
+retains previous protected snapshots; remove obsolete ones explicitly after
+verifying a newer restore. Local deployment state and credentials must be kept.
 
 - Back up the Open WebUI and Agentgateway data directories before destructive
   infrastructure changes.

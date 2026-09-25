@@ -130,6 +130,58 @@ port 4001 remains bound to loopback; an authorized SSH local forward also works.
 
 ## Recovery and data backups
 
+### Pause billing and restore the VM
+
+```bash
+scripts/vm-lifecycle.sh status
+scripts/vm-lifecycle.sh pause
+# Later, when the app is needed again:
+scripts/vm-lifecycle.sh restore
+```
+
+The wrapper loads `deploy/.env.infrastructure`. It uses `HCLOUD_TOKEN` if set,
+otherwise the active hcloud CLI context (`HCLOUD_CONTEXT` and `HCLOUD_CONFIG`
+can override it). Python 3.11+, gh, cloudflared, SSH and the saved deployment
+credentials are required. Pause and restore change real infrastructure; there
+is no additional confirmation prompt. `status` reads provider state.
+
+`pause` checks ownership and the empty-inbound firewall, refuses attached
+Volumes or Floating IPs, and checks that deployment workflows are idle. Do not
+dispatch deployments during a lifecycle operation. It stops the containers,
+checkpoints and integrity-checks both SQLite databases, and records checksums
+for the databases and active configuration on the VM. It gracefully shuts
+down the VM, creates a snapshot, waits for availability, enables snapshot
+deletion protection, then deletes the VM and its recorded Primary IPs. Failed
+snapshot creation leaves the original VM and its disk intact (possibly off).
+Stopping the VM alone does not stop its bill.
+
+`restore` recreates the recorded server type and location from the snapshot,
+attaches the existing firewall, and gets new Primary IPs. Cloud-init configures
+the new network interface while preserving the pinned SSH host keys. Before
+starting the app, it checks the saved data hashes and SQLite integrity. It then
+starts the existing containers and tunnel, verifies SSH, cloud-init and health,
+and updates `.deploy-state/infra.json` to the new server ID. No new deployment,
+DNS change or GitHub secret rotation is required. Provider capacity can block
+creation; the script never silently substitutes a different server type.
+
+Operation checkpoints are saved privately in `.deploy-state/lifecycle.json`.
+Retry the same command after a failure; it recovers existing labeled resources
+and refuses unrelated or conflicting resources. Do not delete/edit this state
+to force a retry. After a pause, use `restore`, not `provision.sh apply`, which
+intentionally refuses to create a blank replacement VM. A snapshot is not a
+provider-independent backup; securely retain `.deploy-state/` and the repository
+off the VM as well. Expired/revoked Cloudflare or Entra credentials may require
+renewal after a long pause.
+
+Every new pause retains a new snapshot; previous snapshots are deliberately
+kept and remain billable until explicitly removed. `status` reports the current
+snapshot's size/cost and older snapshot IDs. To retire an old snapshot, first
+verify a newer restore, then disable deletion protection and delete only that
+old image in Hetzner. While paused, the public applications are offline;
+Cloudflare and Entra configuration remain intact.
+
+### Configuration rollback and off-VM backups
+
 For a manual configuration rollback, connect through Access, inspect the desired
 `releases/<run-id>-<attempt>-previous` snapshot, and restore its `compose.yaml`,
 `compose.production.yaml`, `.env` and, if present, `revision` into `/opt/llm-oauth`.

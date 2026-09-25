@@ -42,7 +42,7 @@ if [[ -s $known_hosts ]]; then
   [[ $recorded_key == "$scanned_key" ]] || { echo 'Recorded SSH host key changed. Refusing to overwrite it.' >&2; exit 1; }
 fi
 ssh_options=(-p 2222 -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$expected" -i "$private_key")
-ssh "${ssh_options[@]}" deploy@127.0.0.1 'sudo timeout 600 cloud-init status --wait >/dev/null && sudo test -f /var/lib/llm-oauth-bootstrap-complete && sudo systemctl is-active --quiet docker cloudflared && docker compose version >/dev/null'
+ssh "${ssh_options[@]}" deploy@127.0.0.1 'sudo python3 - && sudo test -f /var/lib/llm-oauth-bootstrap-complete && sudo systemctl is-active --quiet docker cloudflared && docker compose version >/dev/null' <"$repo_root/scripts/check-cloud-init.py"
 install -m 0600 "$expected" "$known_hosts"
 ssh-keygen -lf "$known_hosts"
 printf 'Verified bootstrap and SSH host key through Cloudflare Access; saved %s.\n' "$known_hosts"

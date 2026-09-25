@@ -9,6 +9,75 @@ audience.
 
 ## The registrations
 
+The settings below are implemented in [configure-entra.sh](scripts/configure-entra.sh)
+and consumed by [compose.yaml](compose.yaml).
+
+| Setting | Open WebUI | LLM Gateway |
+| --- | --- | --- |
+| Supported accounts | Single tenant (`AzureADMyOrg`) | Single tenant (`AzureADMyOrg`) |
+| Application ID variable | `WEBUI_CLIENT_ID` | `GATEWAY_APP_ID` |
+| Web redirect URIs | `http://localhost:3000/oauth/oidc/callback` and `https://chat.johancarlin.com/oauth/oidc/callback` | None |
+| Client credential | Secret value in `WEBUI_CLIENT_SECRET` | None |
+| Exposed API | None | `api://<GATEWAY_APP_ID>` with enabled, admin-consent delegated scope `llm.invoke` |
+| API permission | Delegated gateway `llm.invoke`, with tenant-wide admin consent | No downstream Entra API permission |
+| Optional email claim | ID token | Access token |
+| Token settings | Authorization code + S256 PKCE; implicit grants disabled | `api.requestedAccessTokenVersion: 2` |
+| Enterprise application | Assignment required; setup assigns the signed-in operator to app role `user` | Resource service principal for delegated consent |
+
+`ENTRA_TENANT_ID` identifies the shared tenant. Application/client IDs are
+distinct from directory object IDs and service-principal IDs. The setup script
+uses service-principal IDs for consent and assignments; Compose uses application
+IDs for the OAuth client and token audience. The Entra `user` app role controls
+assignment; Open WebUI's own administrator/user roles are separate.
+
+### Setup and credential locations
+
+With Azure CLI signed in to the intended tenant, check the selected identity
+and run:
+
+```bash
+az account show --query tenantId -o tsv
+az ad signed-in-user show --query userPrincipalName -o tsv
+scripts/configure-entra.sh --production-url https://chat.johancarlin.com
+```
+
+This is a mutating reconciliation command. It finds/creates the two registrations
+by display name, configures their service principals, grants `llm.invoke` with
+`AllPrincipals` consent, and assigns the signed-in user to Open WebUI. Admin
+consent does not remove the application's user-assignment requirement. Use a
+tenant where those display names unambiguously identify this deployment.
+Some settings, including callback URIs and requested API permissions, are
+replaced with the configuration above; review shared registrations before reuse.
+
+Generated IDs and the WebUI client secret are stored in ignored, mode-0600
+`.deploy-state/entra.json` and `.deploy-state/entra.env`. Do not publish these
+files. `scripts/local-setup.sh` invokes the Entra setup and creates the local
+environment. For production, `scripts/configure-github.sh` copies credentials
+to GitHub Actions secrets; the deployment writes a private environment on the VM.
+`WEBUI_SECRET_KEY` is a separate, stable application session/encryption key.
+
+Normal reconciliation reuses the locally saved client secret. The explicit
+`--rotate-secret` option removes **all existing client passwords** on the WebUI
+registration before creating a replacement; use it deliberately, update GitHub
+secrets and redeploy. The script requests a roughly two-year expiry for a new
+secret. Preserve the local state and check the credential's actual expiry in Entra.
+
+### Production access and cost
+
+Cloudflare Access email/OTP protects both public browser hostnames. Chat then
+requires the Entra flow shown below. The gateway administration UI at
+`https://gateway.johancarlin.com/ui/llm/logs` uses Cloudflare Access directly;
+its tunnel connector validates the Access JWT. That JWT is separate from the
+Entra access token required by the LLM API. The GitHub Actions service token
+is authorized for the SSH Access application only.
+
+This setup provisions Entra identity objects, not Azure compute, databases or
+storage. Its basic authentication is expected to add no Azure cost under Entra
+Free; separately purchased premium identity features or other subscription
+resources have their own charges. See [Microsoft's Entra service description](https://learn.microsoft.com/en-us/office365/servicedescriptions/azure-active-directory).
+Application containers and databases run on Hetzner; inference uses the existing
+OpenCode Go subscription. Deleting the VM does not delete these registrations.
+
 ### Open WebUI client
 
 The **Open WebUI** registration is a confidential web client. It has:

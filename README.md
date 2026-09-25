@@ -17,6 +17,10 @@ see the remote deployment notes below before serving other machines.
 
 ## Requirements
 
+See [AUTH.md](AUTH.md) for the Entra registration settings and authentication
+sequence diagram. To suspend the production VM's compute charges while keeping
+its data, use the [pause/restore scripts](deploy/README.md#pause-billing-and-restore-the-vm).
+
 - Docker Engine or Docker Desktop with Docker Compose 2.23.1 or later. The
   `configs.content` feature embeds the gateway configuration in the Compose file.
 - An OpenCode Go subscription and key. The default upstream is the OpenAI-

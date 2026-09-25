@@ -220,13 +220,16 @@ class Provisioner:
         if self.server:
             location = self.server.get("location") or (self.server.get("datacenter") or {}).get("location", {})
             require(self.server["server_type"]["name"] == self.server_type and location.get("name") == self.location, "Existing server type/location differs from the requested configuration")
-            require((self.server.get("image") or {}).get("name") == "ubuntu-24.04", "Existing server image is not Ubuntu 24.04")
+            image = self.server.get("image") or {}
+            restored = self.infra.get("snapshotId") and str(image.get("id")) == self.infra["snapshotId"] and image.get("type") == "snapshot" and image.get("os_flavor") == "ubuntu" and image.get("os_version") == "24.04"
+            require(image.get("name") == "ubuntu-24.04" or restored, "Existing server image is not Ubuntu 24.04 or the recorded restore snapshot")
             require(self.key and self.firewall and self.host_key_path.exists(), "Existing server is missing expected deployment state; recover it first")
             require(self.server.get("status") == "running", "Existing server is not running; inspect it before proceeding")
             require(self.infra.get("serverId", str(self.server["id"])) == str(self.server["id"]), "Local server ID differs from the existing server")
             attached = self.server.get("public_net", {}).get("firewalls", [])
             require(len(attached) == 1 and attached[0]["id"] == self.firewall["id"] and attached[0].get("status") == "applied", "Existing server firewall attachment differs; inspect it before proceeding")
         else:
+            require(not (self.state_dir / "lifecycle.json").exists(), "VM lifecycle state exists; use scripts/vm-lifecycle.sh restore instead of provisioning a blank VM")
             require(not self.infra.get("serverId"), "Recorded VM no longer exists; reconcile state before rebuilding")
             server_type = unique([s for s in self.hc.listing("server-type") if s["name"] == self.server_type], "server type")
             require(server_type and server_type.get("architecture") == "x86", "Requested server type must support the pinned amd64 cloudflared package")
@@ -298,6 +301,7 @@ class Provisioner:
             private_write(cloud_init, rendered)
             self.server = self.hc.command("server", "create", "--name", self.server_name, "--type", self.server_type, "--image", "ubuntu-24.04", "--location", self.location, "--ssh-key", str(self.key["id"]), "--firewall", str(self.firewall["id"]), "--label", "owner=llm-oauth", "--user-data-from-file", str(cloud_init))["server"]
         private_write(self.state_dir / "infra.json", json.dumps({
+            **self.infra,
             "serverId": str(self.server["id"]), "firewallId": str(self.firewall["id"]),
             "sshKeyId": str(self.key["id"]), "sshHostname": self.ssh,
         }, indent=2) + "\n")

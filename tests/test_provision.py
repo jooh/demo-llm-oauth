@@ -214,6 +214,33 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(client.listing("/example?name=test"), [1, 2])
         self.assertIn("&page=2", pages[1])
 
+    def test_recorded_snapshot_is_adopted_and_preserved(self):
+        instance = self.provisioner()
+        instance.discover()
+        instance.apply()
+        image = {"id": 400, "type": "snapshot", "os_flavor": "ubuntu", "os_version": "24.04"}
+        self.hc.resources['server'][0]['image'] = image
+        path = self.state / 'infra.json'
+        infra = json.loads(path.read_text())
+        infra['snapshotId'] = '400'
+        p.private_write(path, json.dumps(infra))
+        again = self.provisioner()
+        again.discover()
+        again.apply()
+        self.assertEqual(json.loads(path.read_text())['snapshotId'], '400')
+        image['id'] = 401
+        with self.assertRaisesRegex(p.ProvisionError, 'recorded restore snapshot'):
+            self.provisioner().discover()
+
+    def test_paused_vm_cannot_be_replaced_by_blank_provision(self):
+        instance = self.provisioner()
+        instance.discover()
+        instance.apply()
+        self.hc.resources['server'] = []
+        p.private_write(self.state / 'lifecycle.json', '{"phase":"paused"}')
+        with self.assertRaisesRegex(p.ProvisionError, 'vm-lifecycle.sh restore'):
+            self.provisioner().discover()
+
 
 if __name__ == "__main__":
     unittest.main()
