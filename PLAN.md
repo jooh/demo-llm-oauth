@@ -28,12 +28,42 @@
 - [x] Hetzner VM `llm-oauth` (167414166), CPX22 in hel1, created with an
       empty-inbound firewall. Docker/Compose and cloudflared bootstrapped;
       restart, service-token SSH, and the pinned host key verified.
-- [ ] Production application containers remain to be deployed.
+- [x] Production application containers deployed through GitHub Actions;
+      Open WebUI is healthy and Agentgateway rejects missing/malformed tokens.
 - [x] CX23 unavailable; the user approved CPX22 in hel1 on 2026-09-25
       at EUR 19.49/month before VAT and IPv4.
 - [x] GitHub Actions service token created and a reusable SSH Service Auth
       policy attached; the existing email policy is preserved.
-- [ ] Review and merge the branch to main before the first deployment.
+- [x] PR #1 merged to main; deployed revision
+      `b2f8843f5326ec46a5d0710ac676e9ae1eb2ed60`.
+- [x] Production credentials configured in `jooh/demo-llm-oauth` Actions
+      secrets with the owner's explicit approval.
+
+## Production verification record — 2026-09-25
+
+- First deployment: [Actions run 36135184810](https://github.com/jooh/demo-llm-oauth/actions/runs/36135184810), successful.
+- Repeat deployment: [Actions run 36135467367](https://github.com/jooh/demo-llm-oauth/actions/runs/36135467367), successful.
+  The prior Compose files, private environment and revision are retained under
+  `/opt/llm-oauth/releases/36135467367-1-previous`; their contents match the
+  first deployment and the environment file remains mode 0600. Both database
+  files retained their identities and passed SQLite integrity checks; existing
+  gateway log rows remain. Production accounts/chats were still empty, so
+  populated-account/chat persistence across restarts remains unverified.
+- Verified strict host-key SSH through the Actions service token, WebUI
+  `/health`, gateway HTTP 401 for missing and malformed tokens, and the private
+  gateway UI. All published application ports bind to `127.0.0.1`.
+- Repeated provisioning plan reports only reuse; no new resources or rotations.
+- Public chat redirects unauthenticated requests to Cloudflare Access. Direct
+  IPv4 probes of ports 22, 3000, 4000 and 4001 timed out. An external IPv6
+  probe remains pending because this workstation has no IPv6 route; the
+  empty-inbound Hetzner firewall applies to both address families.
+- Browser acceptance remains pending: Cloudflare OTP, Entra login, first-user
+  administrator role, streaming across two conversations, session-header
+  stability, successful request attribution/usage, and token renewal.
+- Wrong-audience and valid-but-missing-scope token rejection still require
+  live checks. Missing/malformed-token rejection is verified above.
+- Startup/health-failure rollback is covered by regression tests; no deliberate
+  production outage has been injected.
 
 ## Phase 1: manual prerequisites
 
