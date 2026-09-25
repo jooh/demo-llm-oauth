@@ -64,12 +64,10 @@
   conversations, session-header stability and token renewal remain pending.
 - At the owner's request, created `gateway.johancarlin.com` Access application
   with the existing email-only policy and OTP, plus a route to VM loopback
-  port 4001 with required Access-token validation. An unauthenticated HTTPS
-  probe, using Cloudflare's existing edge address before DNS publication,
-  redirects to Access (302). DNS creation was denied by the read-only API
-  token; the owner must add the proxied CNAME before browser verification.
-  `scripts/expose-gateway.sh plan` verifies this optional configuration;
-  `apply` can resume without duplicating resources.
+  port 4001 with required Access-token validation. The owner added the proxied
+  CNAME and confirmed the UI works. Public DNS and the unauthenticated redirect
+  to Cloudflare Access (302) are verified. `scripts/expose-gateway.sh plan`
+  reports reuse for the application, protected route and DNS record.
 - Wrong-audience and valid-but-missing-scope token rejection still require
   live checks. Missing/malformed-token rejection is verified above.
 - Startup/health-failure rollback is covered by regression tests; no deliberate
