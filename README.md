@@ -8,7 +8,10 @@ OpenAI-compatible LLM endpoint. Open WebUI manages token renewal.
 
 The deployment exposes Open WebUI at `http://localhost:3000`, the gateway API at
 `http://localhost:4000/v1`, and Agentgateway's local administration UI at
-`http://localhost:4001/ui`. All host ports bind only to loopback. The containers
+`http://localhost:4001/ui`. The production gateway UI can be published at
+`https://gateway.johancarlin.com/ui/llm/logs` behind Cloudflare email/OTP;
+see [deployment instructions](deploy/README.md#protected-agentgateway-ui).
+All host ports bind only to loopback. The containers
 communicate over their private Compose network. This is a local evaluation setup;
 see the remote deployment notes below before serving other machines.
 

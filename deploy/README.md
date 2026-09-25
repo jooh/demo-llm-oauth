@@ -96,8 +96,37 @@ rollback succeeds. Data volumes and the gateway data directory remain in place.
 
 A public HTTP check of chat is expected to reach Cloudflare Access. Application
 health is therefore checked on VM loopback. Browser acceptance includes
-Cloudflare email/OTP followed by Entra authentication. Reach the gateway UI via
-an authorized SSH local forward to VM port 4001, never a public tunnel route.
+Cloudflare email/OTP followed by Entra authentication.
+
+## Protected Agentgateway UI
+
+The gateway UI runs on VM loopback port 4001. Publish it at
+`https://gateway.johancarlin.com/ui/llm/logs` with:
+
+```bash
+scripts/expose-gateway.sh plan
+scripts/expose-gateway.sh apply
+```
+
+The script reads the same private infrastructure file as the provisioner.
+`GATEWAY_UI_HOSTNAME` can select another subdomain. It creates a self-hosted
+Access application using the existing reusable email-only Allow policy and
+OTP, then adds a tunnel route to `http://127.0.0.1:4001` with required Access
+JWT validation for that application's audience. It preserves all existing
+tunnel routes/settings and keeps a private pre-change snapshot. The proxied
+CNAME is created last; retries reuse resources already created.
+
+DNS creation requires zone DNS Edit permission. With the original DNS Read
+token, create the record manually instead: CNAME `gateway`, target
+`7f74c6f3-49cb-4195-96e5-dcbd3a861b87.cfargotunnel.com`, proxy enabled.
+Then rerun the plan to verify all three resources. The gateway UI uses
+Cloudflare email authentication; the chat application's Entra login is separate.
+Access covers the entire gateway hostname, including UI API requests and logs.
+The Actions service token is not attached to this application.
+
+Check that an unauthenticated request redirects to Cloudflare Access, then
+complete email verification in a browser and open the request log. The VM's
+port 4001 remains bound to loopback; an authorized SSH local forward also works.
 
 ## Recovery and data backups
 
